@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { background-color: #1E3A8A; color: #FFFFFF; font-family: sans-serif; min-height: 100vh; }
+        .card { background-color: rgba(255,255,255,0.1); border-radius: 8px; padding: 20px; margin-bottom: 15px; border: 1px solid rgba(255,255,255,0.1); }
+        .btn-primary { background-color: #F59E0B; color: #FFFFFF; padding: 10px 20px; border-radius: 5px; font-weight: bold; transition: 0.3s; }
+        .btn-primary:hover { opacity: 0.8; }
+        .input-field { color: #000; padding: 10px; border-radius: 4px; width: 100%; margin-top: 5px; border: none; }
+        .tab-btn { padding: 10px 20px; cursor: pointer; border-bottom: 3px solid transparent; opacity: 0.7; }
+        .tab-btn.active { border-bottom: 3px solid #F59E0B; opacity: 1; font-weight: bold; }
+        .task-done { text-decoration: line-through; opacity: 0.5; }
+        .notification { background: #ef4444; padding: 8px; border-radius: 4px; margin-bottom: 10px; font-size: 0.85rem; border-left: 4px solid #fff; }
+        
+        /* Calendar Specific Styles */
+        .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; background-color: #374151; border: 1px solid #374151; }
+        .calendar-day { background-color: #1F2937; min-height: 85px; padding: 5px; cursor: pointer; transition: 0.2s; position: relative; }
+        .calendar-day:hover { background-color: #374151; }
+        .calendar-header { background-color: #111827; text-align: center; padding: 8px; font-weight: bold; font-size: 0.75rem; color: #F59E0B; }
+        .dot-indicator { height: 6px; width: 6px; border-radius: 50%; display: inline-block; margin-right: 2px; }
+        .day-number { font-size: 0.8rem; opacity: 0.8; margin-bottom: 4px; display: block; }
+    </style>
+</head>
+<body class="p-4">
+    <div id="app" class="max-w-4xl mx-auto">
+        <div class="text-center mb-6">
+            <img id="mainLogo" src="" class="mx-auto h-20 mb-2" style="display:none;">
+            <h1 class="text-2xl font-bold tracking-wide">Mallika Mam's Tutorial</h1>
+        </div>
+
+        <!-- Login Screen -->
+        <div id="loginScreen" class="card max-w-md mx-auto shadow-2xl">
+            <h2 class="text-xl mb-6 text-center font-semibold">Authorized Login</h2>
+            <select id="loginRole" class="input-field mb-4">
+                <option value="student">Student</option>
+                <option value="teacher">Teacher</option>
+                <option value="admin">Admin Staff</option>
+            </select>
+            <input type="text" id="loginId" placeholder="Login ID" class="input-field mb-4">
+            <input type="password" id="loginPass" placeholder="Password" class="input-field mb-6">
+            <button id="loginBtn" onclick="handleLogin()" class="btn-primary w-full shadow-lg">SIGN IN</button>
+        </div>
+
+        <!-- Dashboard -->
+        <div id="dashboard" class="hidden">
+            <div class="flex justify-between items-center mb-6 bg-blue-900 bg-opacity-50 p-4 rounded-lg">
+                <h2 id="welcomeMsg" class="text-lg font-bold"></h2>
+                <button onclick="location.reload()" class="bg-red-500 text-white px-3 py-1 rounded text-sm">Logout</button>
+            </div>
+            <div id="contentArea"></div>
+        </div>
+    </div>
+
+    <script>
+        let currentUser = null;
+        let globalCalendarData = {};
+        const classes = ["Class 10", "Class 9", "Class 8", "Class 7", "Class 6", "Class 5", "Class 4", "Class 3", "Class 2", "Class 1", "Balvatika", "Sr Kg", "Jr Kg"];
+
+        window.onload = () => {
+            google.script.run.withSuccessHandler(url => {
+                if(url) {
+                    const img = document.getElementById('mainLogo');
+                    img.src = url.replace("file/d/", "uc?export=view&id=").replace("/view?usp=sharing", "").replace("/view", "");
+                    img.style.display = 'block';
+                }
+            }).getLogo();
+        };
+
+        function handleLogin() {
+            const btn = document.getElementById('loginBtn');
+            btn.innerText = "Authenticating...";
+            const role = document.getElementById('loginRole').value;
+            
+            google.script.run.withSuccessHandler(user => {
+                currentUser = user;
+                document.getElementById('loginScreen').classList.add('hidden');
+                document.getElementById('dashboard').classList.remove('hidden');
+                document.getElementById('welcomeMsg').innerText = user.name;
+                loadInterface();
+            }).withFailureHandler(err => {
+                alert(err.message);
+                btn.innerText = "SIGN IN";
+            }).login(document.getElementById('loginId').value, document.getElementById('loginPass').value, role);
+        }
+
+        function loadInterface() {
+            const area = document.getElementById('contentArea');
+            if(currentUser.role === 'admin') renderAdmin(area);
+            else if(currentUser.role === 'teacher') renderTeacher(area);
+            else if(currentUser.role === 'student') renderStudent(area);
+        }
+
+        // --- STUDENT VIEW ---
+        // --- NEW STUDENT CALENDAR LOGIC ---
+let studentTasksMap = {}; // Local storage for student tasks
+
+function renderStudent(container) {
+    container.innerHTML = `
+        <div class="flex justify-between items-center mb-4">
+            <h3 class="font-bold text-xl">My Revision Dairy</h3>
+            <div id="studentOverdueCount" class="hidden bg-red-600 px-3 py-1 rounded-full text-xs font-bold pulse"></div>
+        </div>
+        <div id="studentCalendarContainer"></div>
+        
+        <div id="studentDayDetail" class="hidden mt-6 card border-orange-500 border">
+            <div class="flex justify-between items-center mb-4 border-b border-gray-700 pb-2">
+                <h4 id="studentSelectedDate" class="font-bold text-orange-400"></h4>
+                <button onclick="document.getElementById('studentDayDetail').classList.add('hidden')" class="text-xs opacity-70 underline">Close</button>
+            </div>
+            <div id="studentTaskList"></div>
+        </div>
+    `;
+
+    fetchStudentData();
+}
+
+function fetchStudentData() {
+    document.getElementById('studentCalendarContainer').innerHTML = "<p class='text-center p-4'>Opening Dairy...</p>";
+    google.script.run.withSuccessHandler(tasks => {
+        // Group tasks by date key
+        studentTasksMap = {};
+        let overdueCount = 0;
+        const today = new Date().setHours(0,0,0,0);
+
+        tasks.forEach(t => {
+            const dateKey = new Date(t.scheduleDate).toISOString().split('T')[0];
+            if (!studentTasksMap[dateKey]) studentTasksMap[dateKey] = [];
+            studentTasksMap[dateKey].push(t);
+
+            if (new Date(t.scheduleDate).getTime() < today && t.isDone !== "Yes") {
+                overdueCount++;
+            }
+        });
+
+        // Update Overdue Notification
+        const badge = document.getElementById('studentOverdueCount');
+        if (overdueCount > 0) {
+            badge.innerText = overdueCount + " OVERDUE";
+            badge.classList.remove('hidden');
+        }
+
+        renderStudentCalendar();
+    }).getStudentTasks(currentUser.id);
+}
+
+function renderStudentCalendar() {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth();
+    const firstDay = new Date(year, month, 1).getDay();
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    
+    let html = `<div class="text-center font-bold mb-4 text-orange-400">${monthNames[month]} ${year}</div>`;
+    html += `<div class="calendar-grid">`;
+    ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].forEach(d => html += `<div class="calendar-header">${d}</div>`);
+    
+    // Fill empty start slots
+    for (let i = 0; i < firstDay; i++) html += `<div class="calendar-day opacity-20"></div>`;
+
+    // Fill days
+    for (let day = 1; day <= daysInMonth; day++) {
+        const dateKey = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        const dayTasks = studentTasksMap[dateKey] || [];
+        const allDone = dayTasks.length > 0 && dayTasks.every(t => t.isDone === "Yes");
+        const hasPending = dayTasks.some(t => t.isDone !== "Yes");
+        
+        let dayClass = "";
+        if (hasPending) dayClass = "border-l-4 border-orange-500";
+        if (dayTasks.length > 0 && allDone) dayClass = "border-l-4 border-green-500";
+
+        html += `
+            <div class="calendar-day ${dayClass}" onclick="showStudentDayTasks('${dateKey}')">
+                <span class="day-number ${hasPending ? 'text-orange-400 font-bold' : ''}">${day}</span>
+                <div class="space-y-1">
+                    ${dayTasks.map(t => `
+                        <div style="font-size: 0.6rem;" class="truncate ${t.isDone === 'Yes' ? 'text-green-400 line-through opacity-50' : 'text-white'}">
+                            • ${t.topic}
+                        </div>
+                    `).join('')}
+                </div>
+            </div>`;
+    }
+    
+    document.getElementById('studentCalendarContainer').innerHTML = html + `</div>`;
+}
+
+function showStudentDayTasks(dateKey) {
+    const tasks = studentTasksMap[dateKey];
+    const container = document.getElementById('studentDayDetail');
+    const list = document.getElementById('studentTaskList');
+    
+    if (!tasks || tasks.length === 0) {
+        container.classList.add('hidden');
+        return;
+    }
+
+    document.getElementById('studentSelectedDate').innerText = new Date(dateKey).toLocaleDateString(undefined, {dateStyle:'full'});
+    container.classList.remove('hidden');
+    
+    let html = "";
+    tasks.forEach(t => {
+        const isDone = t.isDone === "Yes";
+        html += `
+            <div class="flex items-center mb-4 p-2 bg-white bg-opacity-5 rounded">
+                <input type="checkbox" ${isDone ? "checked" : ""} 
+                    onchange="updateTaskStatus('${t.id}', this.checked, '${dateKey}')" 
+                    class="h-6 w-6 mr-4 accent-orange-500 cursor-pointer">
+                <span class="text-lg ${isDone ? 'task-done' : ''}">${t.topic}</span>
+            </div>`;
+    });
+    list.innerHTML = html;
+    container.scrollIntoView({behavior: 'smooth'});
+}
+
+function updateTaskStatus(taskId, isChecked, dateKey) {
+    // 1. Update Backend
+    google.script.run.toggleTask(taskId, isChecked);
+    
+    // 2. Update Local Map
+    if (studentTasksMap[dateKey]) {
+        const task = studentTasksMap[dateKey].find(t => t.id === taskId);
+        if (task) task.isDone = isChecked ? "Yes" : "No";
+    }
+    
+    // 3. Refresh Visuals
+    renderStudentCalendar();
+}
+        // --- TEACHER VIEW ---
+        function renderTeacher(container) {
+            container.innerHTML = `
+                <div class="card bg-blue-800">
+                    <h3 class="font-bold mb-3">New Assignment</h3>
+                    <input type="text" id="topicInput" placeholder="Enter Topic Name" class="input-field mb-3">
+                    <p class="text-xs mb-1 opacity-70">Select Students (Ctrl+Click to select multiple)</p>
+                    <select id="studentSelect" multiple class="input-field h-32 mb-4"></select>
+                    <button onclick="submitAssignment(this)" class="btn-primary w-full">ASSIGN REVISIONS</button>
+                </div>
+                <div class="mt-8">
+                    <h3 class="font-bold mb-4 border-b border-orange-500 pb-2">Progress Calendar</h3>
+                    <div id="calendarContainer"></div>
+                    <div id="dayDetailContainer" class="hidden card mt-4 border border-orange-500">
+                        <h4 id="selectedDateTitle" class="font-bold text-orange-400 mb-3"></h4>
+                        <div id="dayDetailList"></div>
+                    </div>
+                </div>`;
+            
+            google.script.run.withSuccessHandler(users => {
+                const sel = document.getElementById('studentSelect');
+                users.filter(u => u.role === 'student').forEach(s => {
+                    sel.innerHTML += `<option value="${s.id}">${s.name} (${classes[parseInt(s.classindex)-1] || 'N/A'})</option>`;
+                });
+            }).adminGetUsers();
+
+            refreshTeacherMonitor();
+        }
+
+        function refreshTeacherMonitor() {
+            google.script.run.withSuccessHandler(data => {
+                globalCalendarData = data;
+                renderCalendar();
+            }).getTeacherCalendarData(currentUser.id);
+        }
+
+        function renderCalendar() {
+            const now = new Date();
+            const year = now.getFullYear();
+            const month = now.getMonth();
+            const firstDay = new Date(year, month, 1).getDay();
+            const daysInMonth = new Date(year, month + 1, 0).getDate();
+            const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+            
+            let html = `<div class="text-center font-bold mb-2">${monthNames[month]} ${year}</div>`;
+            html += `<div class="calendar-grid">`;
+            ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].forEach(d => html += `<div class="calendar-header">${d}</div>`);
+            
+            for (let i = 0; i < firstDay; i++) html += `<div class="calendar-day opacity-20"></div>`;
+
+            for (let day = 1; day <= daysInMonth; day++) {
+                const dateKey = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                const tasks = globalCalendarData[dateKey] || [];
+                const doneCount = tasks.filter(t => t.isDone).length;
+                
+                html += `<div class="calendar-day" onclick="showDayDetail('${dateKey}')">
+                    <span class="day-number">${day}</span>
+                    <div class="flex flex-wrap">${tasks.slice(0, 5).map(t => `<span class="dot-indicator ${t.isDone ? 'bg-green-500' : 'bg-orange-500'}"></span>`).join('')}</div>
+                    ${tasks.length > 0 ? `<div style="font-size:0.65rem" class="mt-1">${doneCount}/${tasks.length} Done</div>` : ''}
+                </div>`;
+            }
+            document.getElementById('calendarContainer').innerHTML = html + `</div>`;
+        }
+
+        function showDayDetail(dateKey) {
+            const tasks = globalCalendarData[dateKey];
+            if (!tasks) return;
+            const container = document.getElementById('dayDetailContainer');
+            document.getElementById('selectedDateTitle').innerText = "Revisions: " + dateKey;
+            container.classList.remove('hidden');
+            
+            let h = `<table class="w-full text-xs text-left"><thead><tr class="opacity-70 border-b"><th>Student</th><th>Topic</th><th>Status</th></tr></thead><tbody>`;
+            tasks.forEach(t => {
+                h += `<tr class="border-b border-gray-700"><td class="py-2">${t.studentName}</td><td>${t.topic}</td><td class="${t.isDone ? 'text-green-400' : 'text-orange-400'}">${t.isDone ? 'Done' : 'Pending'}</td></tr>`;
+            });
+            document.getElementById('dayDetailList').innerHTML = h + `</tbody></table>`;
+            container.scrollIntoView({behavior: 'smooth'});
+        }
+
+        function submitAssignment(btn) {
+            const topic = document.getElementById('topicInput').value;
+            const students = Array.from(document.getElementById('studentSelect').selectedOptions).map(o => o.value);
+            if(!topic || !students.length) return alert("Please select students and enter a topic.");
+            btn.innerText = "Assigning...";
+            google.script.run.withSuccessHandler(msg => {
+                alert(msg); refreshTeacherMonitor(); btn.innerText = "ASSIGN REVISIONS";
+                document.getElementById('topicInput').value = "";
+            }).createAssignment(currentUser.id, students, topic);
+        }
+
+        // --- ADMIN VIEW ---
+        function renderAdmin(container) {
+            container.innerHTML = `
+                <div class="flex flex-wrap border-b border-gray-600 mb-6">
+                    <button onclick="showAdminSection('users', this)" class="tab-btn active">Users</button>
+                    <button onclick="showAdminSection('stats', this)" class="tab-btn">Stats</button>
+                    <button onclick="showAdminSection('overdue', this)" class="tab-btn">Overdue</button>
+                    <button onclick="showAdminSection('config', this)" class="tab-btn">Config</button>
+                </div>
+                <div id="adminContent"></div>`;
+            showAdminSection('users');
+        }
+
+        function showAdminSection(section, btn) {
+            if(btn) {
+                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+            }
+            const content = document.getElementById('adminContent');
+            
+            if(section === 'users') {
+                content.innerHTML = `<button onclick="editUser({})" class="btn-primary mb-4">+ Add User</button><div id="userList"></div>`;
+                google.script.run.withSuccessHandler(users => {
+                    let h = `<table class="w-full text-xs text-left"><thead class="bg-blue-900"><tr><th class="p-2">Name</th><th class="p-2">Role</th><th class="p-2">Action</th></tr></thead><tbody>`;
+                    users.forEach(u => h += `<tr class="border-b border-gray-700"><td class="p-2">${u.name}</td><td class="p-2 capitalize">${u.role}</td><td class="p-2"><button onclick='editUser(${JSON.stringify(u)})' class="text-orange-400 underline">Edit</button></td></tr>`);
+                    document.getElementById('userList').innerHTML = h + `</tbody></table>`;
+                }).adminGetUsers();
+            } 
+            else if (section === 'stats') {
+                content.innerHTML = `<div class="card max-w-sm mx-auto"><canvas id="adminChart"></canvas></div>`;
+                google.script.run.withSuccessHandler(s => {
+                    new Chart(document.getElementById('adminChart'), { 
+                        type: 'pie', 
+                        data: { labels: ['Done', 'Pending'], datasets: [{ data: [s.done, s.pending], backgroundColor: ['#10B981', '#F59E0B'] }] } 
+                    });
+                }).getAdminStats();
+            } 
+            else if (section === 'overdue') {
+                content.innerHTML = `<p>Loading Report...</p>`;
+                google.script.run.withSuccessHandler(data => {
+                    if(!data.length) { content.innerHTML = "No overdue tasks!"; return; }
+                    let h = `<table class="w-full text-xs text-left"><thead><tr class="border-b"><th>Student</th><th>Class</th><th>Teacher</th><th>Topic</th><th>Due</th></tr></thead><tbody>`;
+                    data.forEach(i => h += `<tr class="border-b border-gray-700"><td class="p-1">${i.studentName}</td><td>${i.className}</td><td>${i.teacherName}</td><td>${i.topic}</td><td class="text-red-400">${new Date(i.dueDate).toLocaleDateString()}</td></tr>`);
+                    content.innerHTML = h + `</tbody></table>`;
+                }).getOverdueReport();
+            } 
+            else if (section === 'config') {
+                content.innerHTML = `<div class="card"><label class="text-sm">Logo URL:</label><input id="logoInput" class="input-field mb-4" placeholder="Direct Link"><button onclick="saveLogo(this)" class="btn-primary">Save Logo</button></div>`;
+                google.script.run.withSuccessHandler(url => document.getElementById('logoInput').value = url).getLogo();
+            }
+        }
+
+        function saveLogo(btn) {
+            google.script.run.withSuccessHandler(() => alert("Saved")).updateLogo(document.getElementById('logoInput').value);
+        }
+
+        function editUser(u) {
+            const name = prompt("Name", u.name || "");
+            if(name === null) return;
+            const loginId = prompt("Login ID", u.loginid || "");
+            const password = prompt("Password", u.password || "");
+            const role = prompt("Role (student/teacher/admin)", u.role || "student");
+            let c = "1", b = "1";
+            if(role === 'student') { 
+                c = prompt("Class (1:Class 10 ... 13:Jr Kg)", u.classindex || "1"); 
+                b = prompt("Board (1:Guj, 2:CBSE, 3:ICSE)", u.board || "1"); 
+            }
+            const lock = prompt("Locked? (Yes/No)", u.islocked || "No");
+            google.script.run.withSuccessHandler(() => showAdminSection('users')).adminSaveUser({ id: u.id, loginId, password, name, role, classIndex: c, board: b, isLocked: lock });
+        }
+    </script>
+</body>
+</html>
